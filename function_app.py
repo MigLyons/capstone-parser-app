@@ -5,6 +5,7 @@ import requests
 from urllib.request import urlretrieve  # For downloading files from URLs
 import azure.functions as func
 import logging
+import tempfile
 from msal import ConfidentialClientApplication
 import pymupdf  # PyMuPDF for PDF processing
 
@@ -43,7 +44,8 @@ def _sharepointQuery(access_token, url):
         headers={
             "Authorization": access_token,
         }, ).json()
-    filePath, fileResponse = urlretrieve(fileData['@microsoft.graph.downloadUrl'], "tmp/tempProfile.pptx")
+    tempDir = tempfile.gettempdir()
+    filePath, fileResponse = urlretrieve(fileData['@microsoft.graph.downloadUrl'], tempDir + "/tempProfile.pptx")
     return filePath
 
 REQUIRED_SECTIONS = [
