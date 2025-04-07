@@ -29,8 +29,9 @@ def ProfileCreatedOrModified(azservicebus: func.ServiceBusMessage, OutputToBlob:
     if not content:
         logging.error("No content extracted from the file.")
         return
-    profile_data = _parse_profile(content)
+    profile_data = _parse_profile(content, url)
     profile_json = json.dumps(profile_data, indent=2)
+    print(profile_json)
     OutputToBlob.set(profile_json)
 
 def _getAccessToken():
@@ -74,12 +75,12 @@ BULLET_SECTIONS = [
     "Industry Sectors",
     "Languages Spoken",
     "Certifications",
-    "Methodologies"
+    "Methodologies",
+    "Mobility"
 ]
 
 LONGFORM_SECTIONS = [
     "Executive Summary",
-    "Mobility",
     "Name",
     "Email",
     "Job Title"
@@ -126,6 +127,7 @@ def _extract_contact_information(content):
         header_pattern = r'[A-Z]\.\s[A-Za-z]+(?:\s[A-Za-z]+)?\s[-–—]\s["“”](.+?)["“”]'
         #Regex pattern to match an email address
         email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+        watermark = r'(?i)Evaluation Warning'
         header = None
         email = None
         for item in content:
@@ -137,6 +139,8 @@ def _extract_contact_information(content):
             #     content.remove(item)
             elif re.match(email_pattern, item["text"]):
                 email = item["text"]
+                content.remove(item)
+            elif re.match(watermark, item["text"]):
                 content.remove(item)
         header = re.split(r'\s*[-–—]\s*', header) if header else None
         job_title = re.sub(r"[\"“”]", "", header[1] if header else None)
@@ -150,7 +154,7 @@ def _extract_contact_information(content):
         print(f"Error extracting contact information: {e}")
         return None
 
-def _parse_profile(content):
+def _parse_profile(content, url):
     """
     Parses the extracted content into a structure that fits the JSON format:
     {
@@ -166,7 +170,7 @@ def _parse_profile(content):
     """
     # Initialize a map to hold text for each section.
     # For Experience, use a list; for others, use a string.
-    sections_map = {section: [] for section in REQUIRED_SECTIONS}
+    sections_map = {section: "" if section in LONGFORM_SECTIONS else [] for section in REQUIRED_SECTIONS}
     # handle name, email, and job title separately via regex
     contact_sections = _extract_contact_information(content)
 
@@ -177,9 +181,16 @@ def _parse_profile(content):
         if current_section and text:
             if current_section in sections_map:
                 if sections_map[current_section]:
-                    sections_map[current_section].append(text)
+                    if current_section in LONGFORM_SECTIONS or current_section in BULLET_SECTIONS:
+                        sections_map[current_section] += f" {text}"
+                        continue 
+                    else:
+                        sections_map[current_section].append(text)
                 else:
-                    sections_map[current_section] = [text]
+                    if current_section in LONGFORM_SECTIONS or current_section in BULLET_SECTIONS:
+                        sections_map[current_section] = text
+                    else:
+                        sections_map[current_section] = [text]
 
     sections_map["Name"] = contact_sections["name"]
     sections_map["Email"] = contact_sections["email"]
@@ -188,10 +199,10 @@ def _parse_profile(content):
     for section in REQUIRED_SECTIONS:
         if not sections_map[section]:
             continue
-        # if section in BULLET_SECTIONS:
-        #     sections_map[section] = _bullet_section_helper(sections_map[section])
-        # if section in LONGFORM_SECTIONS:
-        #     sections_map[section] = _longform_section_helper(sections_map[section])
+        if section in BULLET_SECTIONS:
+            sections_map[section] = _bullet_section_helper(sections_map[section])
+        if section in LONGFORM_SECTIONS:
+            sections_map[section] = _longform_section_helper(sections_map[section])
         if section == "Experience":
             sections_map[section] = _experience_section_helper(sections_map[section])
 
@@ -213,7 +224,7 @@ def _parse_profile(content):
                         })
     
     return {
-        "sharePointRef": None,
+        "sharePointRef": url,
         "sections": content_list
     }
 
@@ -243,17 +254,17 @@ def _experience_section_helper(lines):
 
         if re.match(r'^[A-Z][a-z]*(?:\s+\w+)*\s[-–—]\s\w+(?:\s\w+)*\s[-–—]\s\w+(?:\s\w+)*', line):
             if project_contents:
-                processed_project = project_contents
-                project_details.append(processed_project)
-                project_contents = []
+                processed_project = _bullet_section_helper(project_contents)
+                project_details.append(processed_project) 
+                project_contents = ""
             project_info.append(_experienceHeaderHelper(line))
         else:
             if project_contents:
-                project_contents.append(line)
+                project_contents += f" {line}"
             else:
-                project_contents = [line]
+                project_contents = line
     else:
-        processed_project = project_contents
+        processed_project = _bullet_section_helper(project_contents)
         project_details.append(processed_project)
     for info, details in zip(project_info, project_details):
         projects.append({
@@ -281,6 +292,12 @@ def _convertToPdf(file_path):
         presentation = Presentation()
         presentation.LoadFromFile(file_path)
         pdf_file_path = file_path.replace('.pptx', '.pdf')
+        for i in range(presentation.Slides.Count):
+            for j in range(presentation.Slides[i].Shapes.Count):
+                if presentation.Slides[i].Shapes[j] is IAutoShape:
+                    shape = presentation.Slides[i].Shapes[j]
+                    if shape.TextFrame.Text.Contains("Evaluation Warning"):
+                        presentation.Slides[i].Shapes.Remove(shape)
         presentation.SaveToFile(pdf_file_path, FileFormat.PDF)
         presentation.Dispose()
         return pdf_file_path
