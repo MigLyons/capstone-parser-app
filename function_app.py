@@ -7,7 +7,9 @@ import azure.functions as func
 import logging
 import tempfile
 from msal import ConfidentialClientApplication
-import pymupdf  # PyMuPDF for PDF processing
+from spire.presentation import *
+from spire.presentation.common import *
+import pymupdf  # PyMuPDF for PDF processing 
 
 app = func.FunctionApp()
 
@@ -20,9 +22,12 @@ def ProfileCreatedOrModified(azservicebus: func.ServiceBusMessage, OutputToBlob:
     url = azservicebus.get_body().decode()
     filePath = _sharepointQuery(_getAccessToken(), url)
     _get_file_type(filePath)
+    # Convert to PDF if the file is a PowerPoint presentation
+    if filePath.endswith('.pptx'):
+        filePath = _convertToPdf(filePath)
     content = _read_pdf_with_metadata(filePath)
     if not content:
-        print("Failed to extract content from the file.")
+        logging.error("No content extracted from the file.")
         return
     profile_data = _parse_profile(content)
     profile_json = json.dumps(profile_data, indent=2)
@@ -82,8 +87,8 @@ LONGFORM_SECTIONS = [
 
 def _get_file_type(file_path):
     """Determines if the uploaded file is a PDF or another type."""
-    if file_path.endswith('.pdf'):
-        return 'pdf'
+    if file_path.endswith('.pptx'):
+        return 'Powerpoint'
     else:
         return 'unsupported'
 
@@ -91,6 +96,7 @@ def _read_pdf_with_metadata(file_path):
     """Reads text and formatting metadata from a PDF file using PyMuPDF."""
     try:
         doc = pymupdf.open(file_path)
+        print(doc)
         content = []
         current_section = None
         for page in doc:
@@ -114,28 +120,35 @@ def _read_pdf_with_metadata(file_path):
         return None
 
 def _extract_contact_information(content):
-
     """Extracts contact information using regex."""
-
-    header_pattern = r'[A-Z]\.\s[A-Za-z]+(?:\s[A-Za-z]+)?\s[-–—]\s["“”](.+?)["“”]'
-    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-    header = None
-    email = None
-    for item in content:
-        if re.match(header_pattern, item["text"]):
-            header = item["text"]
-            content.remove(item)
-        elif re.search(email_pattern, item["text"]):
-            email = re.search(email_pattern, item["text"]).group()
-            content.remove(item)
-    header = re.split(r'\s*[-–—]\s*', header) if header else None
-    job_title = re.sub(r"[\"“”]", "", header[1] if header else None)
-    contact_info = {
-        "name": header[0] if header else None,
-        "email": email if email else None,
-        "job_title": job_title if job_title else None
-    }
-    return contact_info
+    try:
+        #Regex pattern to match a header line formatted like "J. Smith - Job Title" or "J. Smith Doe - Job Title"
+        header_pattern = r'[A-Z]\.\s[A-Za-z]+(?:\s[A-Za-z]+)?\s[-–—]\s["“”](.+?)["“”]'
+        #Regex pattern to match an email address
+        email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+        header = None
+        email = None
+        for item in content:
+            if re.match(header_pattern, item["text"]):
+                header = item["text"]
+                content.remove(item)
+            # elif re.search(email_pattern, item["text"]):
+            #     email = re.search(email_pattern, item["text"]).group()
+            #     content.remove(item)
+            elif re.match(email_pattern, item["text"]):
+                email = item["text"]
+                content.remove(item)
+        header = re.split(r'\s*[-–—]\s*', header) if header else None
+        job_title = re.sub(r"[\"“”]", "", header[1] if header else None)
+        contact_info = {
+            "name": header[0] if header else None,
+            "email": email if email else None,
+            "job_title": job_title if job_title else None
+        }
+        return contact_info
+    except Exception as e:
+        print(f"Error extracting contact information: {e}")
+        return None
 
 def _parse_profile(content):
     """
@@ -261,3 +274,16 @@ def _experienceHeaderHelper(line):
         "project_position": sections[1] if sections[1] else None,
         "project_industry": sections[2] if sections[2] else None
     }
+
+def _convertToPdf(file_path):
+    """Converts a file to PDF format."""
+    try:
+        presentation = Presentation()
+        presentation.LoadFromFile(file_path)
+        pdf_file_path = file_path.replace('.pptx', '.pdf')
+        presentation.SaveToFile(pdf_file_path, FileFormat.PDF)
+        presentation.Dispose()
+        return pdf_file_path
+    except Exception as e:
+        print(f"Error converting to PDF: {e}")
+        return None
