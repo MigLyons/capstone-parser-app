@@ -7,7 +7,9 @@ import azure.functions as func
 import logging
 import tempfile
 from msal import ConfidentialClientApplication
-import pymupdf  # PyMuPDF for PDF processing
+from spire.presentation import *
+from spire.presentation.common import *
+import pymupdf  # PyMuPDF for PDF processing 
 
 app = func.FunctionApp()
 
@@ -20,12 +22,16 @@ def ProfileCreatedOrModified(azservicebus: func.ServiceBusMessage, OutputToBlob:
     url = azservicebus.get_body().decode()
     filePath = _sharepointQuery(_getAccessToken(), url)
     _get_file_type(filePath)
+    # Convert to PDF if the file is a PowerPoint presentation
+    if filePath.endswith('.pptx'):
+        filePath = _convertToPdf(filePath)
     content = _read_pdf_with_metadata(filePath)
     if not content:
-        print("Failed to extract content from the file.")
+        logging.error("No content extracted from the file.")
         return
-    profile_data = _parse_profile(content)
+    profile_data = _parse_profile(content, url)
     profile_json = json.dumps(profile_data, indent=2)
+    print(profile_json)
     OutputToBlob.set(profile_json)
 
 def _getAccessToken():
@@ -69,12 +75,12 @@ BULLET_SECTIONS = [
     "Industry Sectors",
     "Languages Spoken",
     "Certifications",
-    "Methodologies"
+    "Methodologies",
+    "Mobility"
 ]
 
 LONGFORM_SECTIONS = [
     "Executive Summary",
-    "Mobility",
     "Name",
     "Email",
     "Job Title"
@@ -82,8 +88,8 @@ LONGFORM_SECTIONS = [
 
 def _get_file_type(file_path):
     """Determines if the uploaded file is a PDF or another type."""
-    if file_path.endswith('.pdf'):
-        return 'pdf'
+    if file_path.endswith('.pptx'):
+        return 'Powerpoint'
     else:
         return 'unsupported'
 
@@ -91,6 +97,7 @@ def _read_pdf_with_metadata(file_path):
     """Reads text and formatting metadata from a PDF file using PyMuPDF."""
     try:
         doc = pymupdf.open(file_path)
+        print(doc)
         content = []
         current_section = None
         for page in doc:
@@ -114,30 +121,40 @@ def _read_pdf_with_metadata(file_path):
         return None
 
 def _extract_contact_information(content):
-
     """Extracts contact information using regex."""
+    try:
+        #Regex pattern to match a header line formatted like "J. Smith - Job Title" or "J. Smith Doe - Job Title"
+        header_pattern = r'[A-Z]\.\s[A-Za-z]+(?:\s[A-Za-z]+)?\s[-–—]\s["“”](.+?)["“”]'
+        #Regex pattern to match an email address
+        email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+        watermark = r'(?i)Evaluation Warning'
+        header = None
+        email = None
+        for item in content:
+            if re.match(header_pattern, item["text"]):
+                header = item["text"]
+                content.remove(item)
+            # elif re.search(email_pattern, item["text"]):
+            #     email = re.search(email_pattern, item["text"]).group()
+            #     content.remove(item)
+            elif re.match(email_pattern, item["text"]):
+                email = item["text"]
+                content.remove(item)
+            elif re.match(watermark, item["text"]):
+                content.remove(item)
+        header = re.split(r'\s*[-–—]\s*', header) if header else None
+        job_title = re.sub(r"[\"“”]", "", header[1] if header else None)
+        contact_info = {
+            "name": header[0] if header else None,
+            "email": email if email else None,
+            "job_title": job_title if job_title else None
+        }
+        return contact_info
+    except Exception as e:
+        print(f"Error extracting contact information: {e}")
+        return None
 
-    header_pattern = r'[A-Z]\.\s[A-Za-z]+(?:\s[A-Za-z]+)?\s[-–—]\s["“”](.+?)["“”]'
-    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-    header = None
-    email = None
-    for item in content:
-        if re.match(header_pattern, item["text"]):
-            header = item["text"]
-            content.remove(item)
-        elif re.search(email_pattern, item["text"]):
-            email = re.search(email_pattern, item["text"]).group()
-            content.remove(item)
-    header = re.split(r'\s*[-–—]\s*', header) if header else None
-    job_title = re.sub(r"[\"“”]", "", header[1] if header else None)
-    contact_info = {
-        "name": header[0] if header else None,
-        "email": email if email else None,
-        "job_title": job_title if job_title else None
-    }
-    return contact_info
-
-def _parse_profile(content):
+def _parse_profile(content, url):
     """
     Parses the extracted content into a structure that fits the JSON format:
     {
@@ -153,7 +170,7 @@ def _parse_profile(content):
     """
     # Initialize a map to hold text for each section.
     # For Experience, use a list; for others, use a string.
-    sections_map = {section: [] for section in REQUIRED_SECTIONS}
+    sections_map = {section: "" if section in LONGFORM_SECTIONS else [] for section in REQUIRED_SECTIONS}
     # handle name, email, and job title separately via regex
     contact_sections = _extract_contact_information(content)
 
@@ -164,9 +181,16 @@ def _parse_profile(content):
         if current_section and text:
             if current_section in sections_map:
                 if sections_map[current_section]:
-                    sections_map[current_section].append(text)
+                    if current_section in LONGFORM_SECTIONS or current_section in BULLET_SECTIONS:
+                        sections_map[current_section] += f" {text}"
+                        continue 
+                    else:
+                        sections_map[current_section].append(text)
                 else:
-                    sections_map[current_section] = [text]
+                    if current_section in LONGFORM_SECTIONS or current_section in BULLET_SECTIONS:
+                        sections_map[current_section] = text
+                    else:
+                        sections_map[current_section] = [text]
 
     sections_map["Name"] = contact_sections["name"]
     sections_map["Email"] = contact_sections["email"]
@@ -175,10 +199,10 @@ def _parse_profile(content):
     for section in REQUIRED_SECTIONS:
         if not sections_map[section]:
             continue
-        # if section in BULLET_SECTIONS:
-        #     sections_map[section] = _bullet_section_helper(sections_map[section])
-        # if section in LONGFORM_SECTIONS:
-        #     sections_map[section] = _longform_section_helper(sections_map[section])
+        if section in BULLET_SECTIONS:
+            sections_map[section] = _bullet_section_helper(sections_map[section])
+        if section in LONGFORM_SECTIONS:
+            sections_map[section] = _longform_section_helper(sections_map[section])
         if section == "Experience":
             sections_map[section] = _experience_section_helper(sections_map[section])
 
@@ -200,7 +224,7 @@ def _parse_profile(content):
                         })
     
     return {
-        "sharePointRef": None,
+        "sharePointRef": url,
         "sections": content_list
     }
 
@@ -230,17 +254,17 @@ def _experience_section_helper(lines):
 
         if re.match(r'^[A-Z][a-z]*(?:\s+\w+)*\s[-–—]\s\w+(?:\s\w+)*\s[-–—]\s\w+(?:\s\w+)*', line):
             if project_contents:
-                processed_project = project_contents
-                project_details.append(processed_project)
-                project_contents = []
+                processed_project = _bullet_section_helper(project_contents)
+                project_details.append(processed_project) 
+                project_contents = ""
             project_info.append(_experienceHeaderHelper(line))
         else:
             if project_contents:
-                project_contents.append(line)
+                project_contents += f" {line}"
             else:
-                project_contents = [line]
+                project_contents = line
     else:
-        processed_project = project_contents
+        processed_project = _bullet_section_helper(project_contents)
         project_details.append(processed_project)
     for info, details in zip(project_info, project_details):
         projects.append({
@@ -261,3 +285,22 @@ def _experienceHeaderHelper(line):
         "project_position": sections[1] if sections[1] else None,
         "project_industry": sections[2] if sections[2] else None
     }
+
+def _convertToPdf(file_path):
+    """Converts a file to PDF format."""
+    try:
+        presentation = Presentation()
+        presentation.LoadFromFile(file_path)
+        pdf_file_path = file_path.replace('.pptx', '.pdf')
+        for i in range(presentation.Slides.Count):
+            for j in range(presentation.Slides[i].Shapes.Count):
+                if presentation.Slides[i].Shapes[j] is IAutoShape:
+                    shape = presentation.Slides[i].Shapes[j]
+                    if shape.TextFrame.Text.Contains("Evaluation Warning"):
+                        presentation.Slides[i].Shapes.Remove(shape)
+        presentation.SaveToFile(pdf_file_path, FileFormat.PDF)
+        presentation.Dispose()
+        return pdf_file_path
+    except Exception as e:
+        print(f"Error converting to PDF: {e}")
+        return None
