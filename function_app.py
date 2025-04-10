@@ -31,7 +31,6 @@ def ProfileCreatedOrModified(azservicebus: func.ServiceBusMessage, OutputToBlob:
         return
     profile_data = _parse_profile(content, url)
     profile_json = json.dumps(profile_data, indent=2)
-    print(profile_json)
     OutputToBlob.set(profile_json)
 
 def _getAccessToken():
@@ -97,7 +96,6 @@ def _read_pdf_with_metadata(file_path):
     """Reads text and formatting metadata from a PDF file using PyMuPDF."""
     try:
         doc = pymupdf.open(file_path)
-        print(doc)
         content = []
         current_section = None
         for page in doc:
@@ -134,20 +132,20 @@ def _extract_contact_information(content):
             if re.match(header_pattern, item["text"]):
                 header = item["text"]
                 content.remove(item)
-            # elif re.search(email_pattern, item["text"]):
-            #     email = re.search(email_pattern, item["text"]).group()
-            #     content.remove(item)
-            elif re.match(email_pattern, item["text"]):
-                email = item["text"]
+            elif re.search(email_pattern, item["text"]):
+                email = re.search(email_pattern, item["text"]).group()
                 content.remove(item)
+            # elif re.match(email_pattern, item["text"]):
+            #     email = item["text"]
+            #     content.remove(item)
             elif re.match(watermark, item["text"]):
                 content.remove(item)
         header = re.split(r'\s*[-–—]\s*', header) if header else None
         job_title = re.sub(r"[\"“”]", "", header[1] if header else None)
         contact_info = {
-            "name": header[0] if header else None,
-            "email": email if email else None,
-            "job_title": job_title if job_title else None
+            "name": header[0] if header else (_ for _ in ()).throw(ValueError("Invalid data: Name is missing")),
+            "email": email if email else (_ for _ in ()).throw(ValueError("Invalid data: Email is missing")),
+            "job_title": job_title if job_title else (_ for _ in ()).throw(ValueError("Invalid data: Job title is missing"))
         }
         return contact_info
     except Exception as e:
@@ -168,65 +166,69 @@ def _parse_profile(content, url):
       ]
     }
     """
-    # Initialize a map to hold text for each section.
-    # For Experience, use a list; for others, use a string.
-    sections_map = {section: "" if section in LONGFORM_SECTIONS else [] for section in REQUIRED_SECTIONS}
-    # handle name, email, and job title separately via regex
-    contact_sections = _extract_contact_information(content)
+    try: 
+        # Initialize a map to hold text for each section.
+        # For Experience, use a list; for others, use a string.
+        sections_map = {section: "" if section in LONGFORM_SECTIONS else [] for section in REQUIRED_SECTIONS}
+        # handle name, email, and job title separately via regex
+        contact_sections = _extract_contact_information(content)
 
-    current_section = None
-    for item in content:
-        text = item["text"].strip()
-        current_section = item["section"].strip() if item["section"] else current_section
-        if current_section and text:
-            if current_section in sections_map:
-                if sections_map[current_section]:
-                    if current_section in LONGFORM_SECTIONS or current_section in BULLET_SECTIONS:
-                        sections_map[current_section] += f" {text}"
-                        continue 
+        current_section = None
+        for item in content:
+            text = item["text"].strip()
+            current_section = item["section"].strip() if item["section"] else current_section
+            if current_section and text:
+                if current_section in sections_map:
+                    if sections_map[current_section]:
+                        if current_section in LONGFORM_SECTIONS or current_section in BULLET_SECTIONS:
+                            sections_map[current_section] += f" {text}"
+                            continue 
+                        else:
+                            sections_map[current_section].append(text)
                     else:
-                        sections_map[current_section].append(text)
-                else:
-                    if current_section in LONGFORM_SECTIONS or current_section in BULLET_SECTIONS:
-                        sections_map[current_section] = text
-                    else:
-                        sections_map[current_section] = [text]
+                        if current_section in LONGFORM_SECTIONS or current_section in BULLET_SECTIONS:
+                            sections_map[current_section] = text
+                        else:
+                            sections_map[current_section] = [text]
 
-    sections_map["Name"] = contact_sections["name"]
-    sections_map["Email"] = contact_sections["email"]
-    sections_map["Job Title"] = contact_sections["job_title"]
-    # Process each section using helper functions.
-    for section in REQUIRED_SECTIONS:
-        if not sections_map[section]:
-            continue
-        if section in BULLET_SECTIONS:
-            sections_map[section] = _bullet_section_helper(sections_map[section])
-        if section in LONGFORM_SECTIONS:
-            sections_map[section] = _longform_section_helper(sections_map[section])
-        if section == "Experience":
-            sections_map[section] = _experience_section_helper(sections_map[section])
-
-    # Build a list of sections with keys "section_name" and "section_content".
-    content_list = []
-    for section in sections_map:
-        if sections_map[section]:
+        sections_map["Name"] = contact_sections["name"]
+        sections_map["Email"] = contact_sections["email"]
+        sections_map["Job Title"] = contact_sections["job_title"]
+        # Process each section using helper functions.
+        for section in REQUIRED_SECTIONS:
+            if not sections_map[section]:
+                continue
+            if section in BULLET_SECTIONS:
+                sections_map[section] = _bullet_section_helper(sections_map[section])
             if section in LONGFORM_SECTIONS:
-                content_list.append({
-                    "section_name": section,
-                    "section_content": sections_map[section]
-                })
-            else:
-                for val in sections_map[section]:
-                    if val:
-                        content_list.append({
-                            "section_name": section,
-                            "section_content": val
-                        })
-    
-    return {
-        "sharePointRef": url,
-        "sections": content_list
-    }
+                sections_map[section] = _longform_section_helper(sections_map[section])
+            if section == "Experience":
+                sections_map[section] = _experience_section_helper(sections_map[section])
+
+        # Build a list of sections with keys "section_name" and "section_content".
+        content_list = []
+        for section in sections_map:
+            if sections_map[section]:
+                if section in LONGFORM_SECTIONS:
+                    content_list.append({
+                        "section_name": section,
+                        "section_content": sections_map[section]
+                    })
+                else:
+                    for val in sections_map[section]:
+                        if val:
+                            content_list.append({
+                                "section_name": section,
+                                "section_content": val
+                            })
+        
+        return {
+            "sharePointRef": url,
+            "sections": content_list
+        }
+    except Exception as e:
+        print(f"Error parsing profile: {e}")
+        return None
 
 def _bullet_section_helper(section_text):
     """
