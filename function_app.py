@@ -20,7 +20,8 @@ def ProfileCreatedOrModified(azservicebus: func.ServiceBusMessage, OutputToBlob:
     logging.info('Python ServiceBus Queue trigger processed a message: %s',
                 azservicebus.get_body().decode('utf-8'))
     url = azservicebus.get_body().decode()
-    filePath = _sharepointQuery(_getAccessToken(), url)
+    fileData = _sharepointQuery(_getAccessToken(), url)
+    filePath = _tempSave(fileData)
     _get_file_type(filePath)
     # Convert to PDF if the file is a PowerPoint presentation
     if filePath.endswith('.pptx'):
@@ -32,6 +33,15 @@ def ProfileCreatedOrModified(azservicebus: func.ServiceBusMessage, OutputToBlob:
     profile_data = _parse_profile(content, url)
     profile_json = json.dumps(profile_data, indent=2)
     OutputToBlob.set(profile_json)
+@app.route(route="getURL", methods=[func.HttpMethod.POST])
+async def getURL(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info('Python HTTP trigger function processed a request.')
+    requested_file = req.get_body().decode()
+    response_body = _sharepointQuery(_getAccessToken(), requested_file)
+    return func.HttpResponse(
+        response_body,
+        status_code=200
+    )
 
 def _getAccessToken():
     client = ConfidentialClientApplication(
@@ -43,15 +53,18 @@ def _getAccessToken():
     access_token = 'Bearer ' + token_result["access_token"]
     return access_token
 
+def _tempSave(downloadUrl):
+    tempDir = tempfile.gettempdir()
+    filePath, fileResponse = urlretrieve(downloadUrl, tempDir + "/tempProfile.pptx")
+    return filePath
+
 def _sharepointQuery(access_token, url):
     # Make a GET request to the SharePoint REST API to retrieve the file from the event
     fileData = requests.get(url,
         headers={
             "Authorization": access_token,
         }, ).json()
-    tempDir = tempfile.gettempdir()
-    filePath, fileResponse = urlretrieve(fileData['@microsoft.graph.downloadUrl'], tempDir + "/tempProfile.pptx")
-    return filePath
+    return fileData['@microsoft.graph.downloadUrl']  # Return the download URL
 
 REQUIRED_SECTIONS = [
     "Name",
@@ -95,7 +108,7 @@ def _get_file_type(file_path):
 def _read_pdf_with_metadata(file_path):
     """Reads text and formatting metadata from a PDF file using PyMuPDF."""
     try:
-        doc = pymupdf.open(file_path)
+        doc = pymupdf.open(file_path) 
         content = []
         current_section = None
         for page in doc:
@@ -122,7 +135,7 @@ def _extract_contact_information(content):
     """Extracts contact information using regex."""
     try:
         #Regex pattern to match a header line formatted like "J. Smith - Job Title" or "J. Smith Doe - Job Title"
-        header_pattern = r'[A-Z]\.\s[A-Za-z]+(?:\s[A-Za-z]+)?\s[-–—]\s["“”](.+?)["“”]'
+        header_pattern = r'[A-Z]\.\s[A-Za-z]+(?:\s[A-Za-z]+)?\s[-–—]\s["“”]?(.*?)["“”]?'
         #Regex pattern to match an email address
         email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
         watermark = r'(?i)Evaluation Warning'
