@@ -33,6 +33,7 @@ def ProfileCreatedOrModified(azservicebus: func.ServiceBusMessage, OutputToBlob:
     profile_data = _parse_profile(content, url)
     profile_json = json.dumps(profile_data, indent=2)
     OutputToBlob.set(profile_json)
+    
 @app.route(route="getURL", methods=[func.HttpMethod.POST])
 async def getURL(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request.')
