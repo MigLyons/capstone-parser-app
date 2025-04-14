@@ -63,8 +63,11 @@ def _sharepointQuery(access_token, url):
     fileData = requests.get(url,
         headers={
             "Authorization": access_token,
-        }, ).json()
-    return fileData['@microsoft.graph.downloadUrl']  # Return the download URL
+        }, ).json() 
+    url = fileData['@microsoft.graph.downloadUrl']  # Extract the download URL from the response
+    if not url:
+        raise ValueError("Download URL not found in the response.")
+    return url  # Return the download URL
 
 REQUIRED_SECTIONS = [
     "Name",
@@ -156,9 +159,9 @@ def _extract_contact_information(content):
         header = re.split(r'\s*[-–—]\s*', header) if header else None
         job_title = re.sub(r"[\"“”]", "", header[1] if header else None)
         contact_info = {
-            "name": header[0] if header else (_ for _ in ()).throw(ValueError("Invalid data: Name is missing")),
-            "email": email if email else (_ for _ in ()).throw(ValueError("Invalid data: Email is missing")),
-            "job_title": job_title if job_title else (_ for _ in ()).throw(ValueError("Invalid data: Job title is missing"))
+            "name": header[0] if header else (_ for _ in ()).throw(DocumentReadException("Invalid data: Name is missing")),
+            "email": email if email else (_ for _ in ()).throw(DocumentReadException("Invalid data: Email is missing")),
+            "job_title": job_title if job_title else (_ for _ in ()).throw(DocumentReadException("Invalid data: Job title is missing"))
         }
         return contact_info
     except Exception as e:
