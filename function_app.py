@@ -9,7 +9,7 @@ import tempfile
 from msal import ConfidentialClientApplication
 from spire.presentation import *
 from spire.presentation.common import *
-import pymupdf  # PyMuPDF for PDF processing 
+import pymupdf 
 
 app = func.FunctionApp()
 
@@ -23,7 +23,6 @@ def ProfileCreatedOrModified(azservicebus: func.ServiceBusMessage, OutputToBlob:
     fileData = _sharepointQuery(_getAccessToken(), url)
     filePath = _tempSave(fileData)
     _get_file_type(filePath)
-    # Convert to PDF if the file is a PowerPoint presentation
     if filePath.endswith('.pptx'):
         filePath = _convertToPdf(filePath)
     content = _read_pdf_with_metadata(filePath)
@@ -33,7 +32,7 @@ def ProfileCreatedOrModified(azservicebus: func.ServiceBusMessage, OutputToBlob:
     profile_data = _parse_profile(content, url)
     profile_json = json.dumps(profile_data, indent=2)
     OutputToBlob.set(profile_json)
-    
+
 @app.route(route="getURL", methods=[func.HttpMethod.POST])
 async def getURL(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request.')
