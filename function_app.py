@@ -33,11 +33,18 @@ def ProfileCreatedOrModified(azservicebus: func.ServiceBusMessage, OutputToBlob:
     profile_json = json.dumps(profile_data, indent=2)
     OutputToBlob.set(profile_json)
 
-@app.route(route="getURL", methods=[func.HttpMethod.POST])
+@app.route(route="getURL", methods=[func.HttpMethod.POST], auth_level=func.AuthLevel.ANONYMOUS)
 async def getURL(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request.')
-    requested_file = req.get_body().decode()
-    response_body = _sharepointQuery(_getAccessToken(), requested_file)
+    request_json = req.get_body().decode()
+    request_url = json.loads(request_json)
+    sharepointRef = request_url["sharepointRef"]
+    if not request_url["sharepointRef"]:
+        return func.HttpResponse(
+            "sharepointRef is required.",
+            status_code=400
+        )
+    response_body = _sharepointQuery(_getAccessToken(), sharepointRef)
     return func.HttpResponse(
         response_body,
         status_code=200
